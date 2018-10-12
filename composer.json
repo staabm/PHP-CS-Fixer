@@ -29,7 +29,8 @@
         "symfony/polyfill-php70": "^1.0",
         "symfony/polyfill-php72": "^1.4",
         "symfony/process": "^3.0 || ^4.0",
-        "symfony/stopwatch": "^3.0 || ^4.0"
+        "symfony/stopwatch": "^3.0 || ^4.0",
+        "amphp/file": "^0.3"
     },
     "conflict": {
         "hhvm": "*"

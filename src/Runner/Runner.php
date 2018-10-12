@@ -144,6 +144,10 @@ final class Runner
             }
         }
 
+        // wait on all async file write to finish
+        $pool = \Amp\Parallel\Worker\pool();
+        $pool->shutdown();
+
         return $changed;
     }
 
@@ -245,16 +249,16 @@ final class Runner
             }
 
             if (!$this->isDryRun) {
-                if (false === @file_put_contents($file->getRealPath(), $new)) {
-                    $error = error_get_last();
-
-                    throw new IOException(
-                        sprintf('Failed to write file "%s", "%s".', $file->getPathname(), $error ? $error['message'] : 'no reason available'),
-                        0,
-                        null,
-                        $file->getRealPath()
-                    );
-                }
+                \Amp\File\put($file->getRealPath(), $new)->onResolve(function(\Throwable $error = null, $result = null) {
+                    if ($error) {
+                        throw new IOException(
+                            sprintf('Failed to write file "%s", "%s".', $file->getPathname(), $error->getMessage() ?: 'no reason available'),
+                            0,
+                            null,
+                            $file->getRealPath()
+                        );
+                    }
+                });
             }
         }
 
