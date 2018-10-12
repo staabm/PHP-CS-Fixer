@@ -29,6 +29,7 @@ use PhpCsFixer\Tokenizer\Tokens;
 use Symfony\Component\EventDispatcher\Event;
 use Symfony\Component\EventDispatcher\EventDispatcherInterface;
 use Symfony\Component\Filesystem\Exception\IOException;
+use Amp\Parallel\Worker\DefaultPool;
 
 /**
  * @author Dariusz Rumiński <dariusz.ruminski@gmail.com>
@@ -127,6 +128,9 @@ final class Runner
         $collection = $this->linter->isAsync()
             ? new FileCachingLintingIterator($fileFilteredFileIterator, $this->linter)
             : new FileLintingIterator($fileFilteredFileIterator, $this->linter);
+
+        // do we need non-default settings for the pooling?
+        // \Amp\Parallel\Worker\pool(new DefaultPool(4));
 
         foreach ($collection as $file) {
             $fixInfo = $this->fixFile($file, $collection->currentLintingResult());
