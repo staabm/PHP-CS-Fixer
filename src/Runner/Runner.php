@@ -144,9 +144,9 @@ final class Runner
             }
         }
 
-        // wait on all async file write to finish
+        // wait on all async file writes to finish
         $pool = \Amp\Parallel\Worker\pool();
-        $pool->shutdown();
+        \Amp\Promise\wait($pool->shutdown());
 
         return $changed;
     }
@@ -249,7 +249,7 @@ final class Runner
             }
 
             if (!$this->isDryRun) {
-                \Amp\File\put($file->getRealPath(), $new)->onResolve(function(\Throwable $error = null, $result = null) {
+                \Amp\File\put($file->getRealPath(), $new)->onResolve(function(\Throwable $error = null, $result = null) use ($file) {
                     if ($error) {
                         throw new IOException(
                             sprintf('Failed to write file "%s", "%s".', $file->getPathname(), $error->getMessage() ?: 'no reason available'),
