@@ -16,43 +16,43 @@ use PhpCsFixer\Tokenizer\CodeHasher;
 use PhpCsFixer\Tokenizer\Tokens;
 
 /**
- * Handle PHP code linting.
- *
  * @author Dariusz Rumiński <dariusz.ruminski@gmail.com>
  *
  * @internal
  */
-final class TokenizerLinter implements LinterInterface
+final class TokenizerAsyncLintingResult implements LintingResultInterface
 {
-    public function __construct()
+    /**
+     * @var null|\ParseError
+     */
+    private $error;
+
+    private $promise;
+
+    /**
+     * @param null|\ParseError $error
+     */
+    public function __construct(\ParseError $error = null, \Amp\Promise $promise = null)
     {
-        if (false === \defined('TOKEN_PARSE')) {
-            throw new UnavailableLinterException('Cannot use tokenizer as linter.');
+        $this->error = $error;
+        $this->promise = $promise;
+    }
+
+    /**
+     * {@inheritdoc}
+     */
+    public function check()
+    {
+        if (null !== $this->error) {
+            throw new LintingException(
+                sprintf('PHP Parse error: %s on line %d.', $this->error->getMessage(), $this->error->getLine()),
+                $this->error->getCode(),
+                $this->error
+            );
         }
-    }
 
-    /**
-     * {@inheritdoc}
-     */
-    public function isAsync()
-    {
-        return true;
-    }
+        $source = \Amp\Promise\wait($this->promise);
 
-    /**
-     * {@inheritdoc}
-     */
-    public function lintFile($path)
-    {
-        $promise = \Amp\File\get($path);
-        return new TokenizerAsyncLintingResult(null, $promise);
-    }
-
-    /**
-     * {@inheritdoc}
-     */
-    public function lintSource($source)
-    {
         try {
             // To lint, we will parse the source into Tokens.
             // During that process, it might throw ParseError.
@@ -61,10 +61,12 @@ final class TokenizerLinter implements LinterInterface
             $codeHash = CodeHasher::calculateCodeHash($source);
             Tokens::clearCache($codeHash);
             Tokens::fromCode($source);
-
-            return new TokenizerLintingResult();
         } catch (\ParseError $e) {
-            return new TokenizerLintingResult($e);
+            throw new LintingException(
+                sprintf('PHP Parse error: %s on line %d.', $e->getMessage(), $e->getLine()),
+                $e->getCode(),
+                $e
+            );
         }
     }
 }
