@@ -144,7 +144,7 @@ final class Runner
             }
         }
 
-        // wait on all async file writes to finish
+        // wait on all async operations to finish
         $pool = \Amp\Parallel\Worker\pool();
         \Amp\Promise\wait($pool->shutdown());
 
