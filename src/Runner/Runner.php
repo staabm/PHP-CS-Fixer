@@ -124,26 +124,57 @@ final class Runner
             $this->cacheManager
         );
 
-        $collection = $this->linter->isAsync()
-            ? new FileCachingLintingIterator($fileFilteredFileIterator, $this->linter)
-            : new FileLintingIterator($fileFilteredFileIterator, $this->linter);
+        $buffer = array();
+        $kidProcesses = array();
+        foreach($fileFilteredFileIterator as $file) {
+            $buffer[] = $file;
 
-        foreach ($collection as $file) {
-            $fixInfo = $this->fixFile($file, $collection->currentLintingResult());
+            if (count($buffer) > 20) {
+                $arrayObject = new ArrayObject($buffer);
+                $arrayIterator = $arrayObject->getIterator();
 
-            // we do not need Tokens to still caching just fixed file - so clear the cache
-            Tokens::clearCache();
+                $pid = pcntl_fork();
+                if ($pid == -1) {
+                    die('could not fork');
+                } else if ($pid) {
+                    // we are the parent, remember our kids
+                    $kidProcesses[] = $pid;
+                } else {
+                    // we are the child
+                    $collection = $this->linter->isAsync()
+                        ? new FileCachingLintingIterator($arrayIterator, $this->linter)
+                        : new FileLintingIterator($arrayIterator, $this->linter);
 
-            if ($fixInfo) {
-                $name = $this->directory->getRelativePathTo($file);
-                $changed[$name] = $fixInfo;
+                    foreach ($collection as $file) {
+                        $fixInfo = $this->fixFile($file, $collection->currentLintingResult());
 
-                if ($this->stopOnViolation) {
-                    break;
+                        // we do not need Tokens to still caching just fixed file - so clear the cache
+                        Tokens::clearCache();
+
+                        if ($fixInfo) {
+                            $name = $this->directory->getRelativePathTo($file);
+                            $changed[$name] = $fixInfo;
+
+                            if ($this->stopOnViolation) {
+                                break;
+                            }
+                        }
+                    }
+
+                    // exit the child
+                    exit();
                 }
+
+                $buffer = array();
             }
         }
 
+        foreach($kidProcesses as $pid) {
+            pcntl_waitpid($pid);
+        }
+
+        // XXX
+        //$changed = true;
         return $changed;
     }
 
