@@ -12,6 +12,8 @@
 
 namespace PhpCsFixer\Runner;
 
+use Amp\Parallel\Worker\DefaultPool;
+use Amp\Promise;
 use PhpCsFixer\AbstractFixer;
 use PhpCsFixer\Cache\CacheManagerInterface;
 use PhpCsFixer\Cache\Directory;
@@ -23,6 +25,7 @@ use PhpCsFixer\Event\Event;
 use PhpCsFixer\FileReader;
 use PhpCsFixer\Fixer\FixerInterface;
 use PhpCsFixer\FixerFileProcessedEvent;
+use PhpCsFixer\Linter\FixFileTask;
 use PhpCsFixer\Linter\LinterInterface;
 use PhpCsFixer\Linter\LintingException;
 use PhpCsFixer\Linter\LintingResultInterface;
@@ -128,25 +131,138 @@ final class Runner
             ? new FileCachingLintingIterator($fileFilteredFileIterator, $this->linter)
             : new FileLintingIterator($fileFilteredFileIterator, $this->linter);
 
+        // $processPool = \Amp\Parallel\Worker\pool();
+        $processPool = new DefaultPool(6);
+        $promises = [];
+
         foreach ($collection as $file) {
-            $fixInfo = $this->fixFile($file, $collection->currentLintingResult());
+            $task = new FixFileTask($file->getRealPath(), $this->fixers, null, $collection->currentLintingResult());
+            $promise = $processPool->enqueue($task);
 
-            // we do not need Tokens to still caching just fixed file - so clear the cache
-            Tokens::clearCache();
+            $promise->onResolve(function($reason, $fixResult) use ($file, &$fixInfo, &$changed) {
+                // handle error
+                if ($reason) {
+                    assert($reason instanceof \Throwable);
 
-            if ($fixInfo) {
-                $name = $this->directory->getRelativePathTo($file);
-                $changed[$name] = $fixInfo;
-
-                if ($this->stopOnViolation) {
-                    break;
+                    var_dump("bad things happend:". $reason->getMessage());
+                    var_dump($reason->getTraceAsString());
+                    throw new $reason;
                 }
-            }
+
+                assert($fixResult instanceof FixFileTaskResult);
+                $fixInfo = $this->handleFixResult($file, $fixResult);
+
+                // we do not need Tokens to still caching just fixed file - so clear the cache
+                Tokens::clearCache();
+
+                if ($fixInfo) {
+                    $name = $this->directory->getRelativePathTo($file);
+                    $changed[$name] = $fixInfo;
+/*
+                    if ($this->stopOnViolation) {
+                        break;
+                    }
+*/
+                }
+            });
+
+            $promises[] = $promise;
         }
+
+        \Amp\Promise\wait(\Amp\Promise\all($promises));
+        \Amp\Promise\wait($processPool->shutdown());
 
         return $changed;
     }
 
+    private function handleFixResult($file, FixFileTaskResult $fixResult) {
+        $name = $file->getPathname();
+
+        if ($fixResult->lintingException) {
+            $this->dispatchEvent(
+                FixerFileProcessedEvent::NAME,
+                new FixerFileProcessedEvent(FixerFileProcessedEvent::STATUS_INVALID)
+            );
+
+            $this->errorsManager->report(new Error(Error::TYPE_INVALID, $name, $fixResult->lintingException));
+
+            return;
+        }
+
+        if ($fixResult->fixException) {
+            $this->processException($name, $fixResult->fixException);
+
+            return;
+        }
+
+        if ($fixResult->parseError) {
+            $this->dispatchEvent(
+                FixerFileProcessedEvent::NAME,
+                new FixerFileProcessedEvent(FixerFileProcessedEvent::STATUS_LINT)
+            );
+
+            $this->errorsManager->report(new Error(Error::TYPE_LINT, $name, $fixResult->parseError));
+
+            return;
+        }
+
+        if ($fixResult->fixThrowable) {
+            $this->processException($name, $fixResult->fixThrowable);
+
+            return;
+        }
+
+        $old = $fixResult->oldCode;
+        $new = $fixResult->newCode;
+        $appliedFixers = $fixResult->appliedFixers;
+
+        // We need to check if content was changed and then applied changes.
+        // But we can't simple check $appliedFixers, because one fixer may revert
+        // work of other and both of them will mark collection as changed.
+        // Therefore we need to check if code hashes changed.
+        if ($fixResult->hashChanged) {
+            $fixInfo = [
+                'appliedFixers' => $appliedFixers,
+                'diff' => $this->differ->diff($old, $new),
+            ];
+
+            try {
+                $this->linter->lintSource($new)->check();
+            } catch (LintingException $e) {
+                $this->dispatchEvent(
+                    FixerFileProcessedEvent::NAME,
+                    new FixerFileProcessedEvent(FixerFileProcessedEvent::STATUS_LINT)
+                );
+
+                $this->errorsManager->report(new Error(Error::TYPE_LINT, $name, $e, $fixInfo['appliedFixers'], $fixInfo['diff']));
+
+                return;
+            }
+
+            if (!$this->isDryRun) {
+                if (false === @file_put_contents($file->getRealPath(), $new)) {
+                    $error = error_get_last();
+
+                    throw new IOException(
+                        sprintf('Failed to write file "%s", "%s".', $file->getPathname(), $error ? $error['message'] : 'no reason available'),
+                        0,
+                        null,
+                        $file->getRealPath()
+                    );
+                }
+            }
+        }
+
+        $this->cacheManager->setFile($name, $new);
+
+        $this->dispatchEvent(
+            FixerFileProcessedEvent::NAME,
+            new FixerFileProcessedEvent($fixInfo ? FixerFileProcessedEvent::STATUS_FIXED : FixerFileProcessedEvent::STATUS_NO_CHANGES)
+        );
+
+        return $fixInfo;
+    }
+/*
     private function fixFile(\SplFileInfo $file, LintingResultInterface $lintingResult)
     {
         $name = $file->getPathname();
@@ -267,7 +383,7 @@ final class Runner
 
         return $fixInfo;
     }
-
+*/
     /**
      * Process an exception that occurred.
      *
